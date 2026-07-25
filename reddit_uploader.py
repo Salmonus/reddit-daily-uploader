@@ -9,8 +9,8 @@ import boto3
 # ===== 환경변수 =====
 APIFY_TOKEN = os.environ["APIFY_TOKEN"]
 SUBREDDITS = [s.strip() for s in os.environ.get("SUBREDDITS", "wallpapers").split(",") if s.strip()]
-LIMIT_PER_SUB = int(os.environ.get("LIMIT_PER_SUB", "30"))
-MAX_ITEMS = int(os.environ.get("MAX_ITEMS", "100"))
+LIMIT_PER_SUB = int(os.environ.get("LIMIT_PER_SUB", "150"))   # 30 → 150으로 상향
+MAX_ITEMS = int(os.environ.get("MAX_ITEMS", "100"))           # 그대로 유지
 S3_BUCKET = os.environ["S3_BUCKET"]
 AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 GRAPHQL_ENDPOINT = os.environ["GRAPHQL_ENDPOINT"]
@@ -126,12 +126,14 @@ def process_subreddit(client: ApifyClient, subreddit: str):
         f"{base}/top/?t=day",
         f"{base}/hot/",
         f"{base}/rising/",
+        f"{base}/new/",                 # 추가
+        f"{base}/top/?t=week",          # 추가
     ]
 
     run_input = {
         "startUrls": start_urls,
         "maxItems": MAX_ITEMS,
-        "endPage": 20,
+        "endPage": 30,                  # 20 → 30으로 소폭 상향
         "includeComments": False,
         "proxy": {
             "useApifyProxy": True,
