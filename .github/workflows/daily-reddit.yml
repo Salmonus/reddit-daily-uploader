@@ -33,6 +33,7 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
-          SUBREDDIT: ${{ secrets.SUBREDDIT }}
-          LIMIT: 30
+          SUBREDDITS: ${{ secrets.SUBREDDITS }}
+          LIMIT_PER_SUB: 30
+          MAX_ITEMS: 100
         run: python reddit_uploader.py
