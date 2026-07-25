@@ -2,8 +2,13 @@ name: Daily Reddit to Amplify Uploader
 
 on:
   schedule:
-    # 매일 UTC 01:00 (한국 시간 오전 10시)
-    - cron: '0 1 * * *'
+    # 한국 시간 기준 하루 3번 실행
+    # 1. 아침 8시 (UTC 23:00)
+    - cron: '0 23 * * *'
+    # 2. 오후 4시 (UTC 07:00)
+    - cron: '0 7 * * *'
+    # 3. 밤 12시 (자정, 다음날 넘어가기 직전) (UTC 15:00)
+    - cron: '0 15 * * *'
   workflow_dispatch:  # 수동 실행 버튼 활성화
 
 jobs:
