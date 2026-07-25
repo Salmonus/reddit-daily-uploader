@@ -2,8 +2,8 @@ name: Post approved images to X
 
 on:
   schedule:
-    # 15분마다 (너무 잦으면 60분으로 바꿔도 됨)
-    - cron: '*/15 * * * *'
+    # 1시간마다 실행
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 jobs:
