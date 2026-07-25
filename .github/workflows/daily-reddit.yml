@@ -1,0 +1,38 @@
+name: Daily Reddit to Amplify Uploader
+
+on:
+  schedule:
+    # 매일 UTC 01:00 (한국 시간 오전 10시)
+    - cron: '0 1 * * *'
+  workflow_dispatch:  # 수동 실행 버튼 활성화
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install apify-client requests boto3
+
+      - name: Run Reddit Uploader
+        env:
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          GRAPHQL_ENDPOINT: ${{ secrets.GRAPHQL_ENDPOINT }}
+          API_KEY: ${{ secrets.API_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          SUBREDDIT: ${{ secrets.SUBREDDIT }}
+          LIMIT: 30
+        run: python reddit_uploader.py
