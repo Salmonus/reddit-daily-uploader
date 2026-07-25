@@ -57,6 +57,8 @@ def create_post(title, content, image_path, source_url=None, reddit_id=None):
         title
         imagePath
         redditId
+        status
+        fetchedAt
       }
     }
     """
@@ -67,6 +69,8 @@ def create_post(title, content, image_path, source_url=None, reddit_id=None):
             "imagePath": image_path,
             "sourceUrl": source_url,
             "redditId": reddit_id,
+            "status": "pending",
+            "fetchedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
     }
     headers = {
