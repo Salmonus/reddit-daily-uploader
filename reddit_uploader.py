@@ -8,10 +8,9 @@ import boto3
 
 # ===== 환경변수 =====
 APIFY_TOKEN = os.environ["APIFY_TOKEN"]
-# 여러 서브레딧 (쉼표로 구분)
 SUBREDDITS = [s.strip() for s in os.environ.get("SUBREDDITS", "wallpapers").split(",") if s.strip()]
-LIMIT_PER_SUB = int(os.environ.get("LIMIT_PER_SUB", "30"))   # 서브레딧당 업로드 개수
-MAX_ITEMS = int(os.environ.get("MAX_ITEMS", "100"))          # 서브레딧당 Apify 검색 개수
+LIMIT_PER_SUB = int(os.environ.get("LIMIT_PER_SUB", "30"))
+MAX_ITEMS = int(os.environ.get("MAX_ITEMS", "100"))
 S3_BUCKET = os.environ["S3_BUCKET"]
 AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 GRAPHQL_ENDPOINT = os.environ["GRAPHQL_ENDPOINT"]
@@ -41,7 +40,12 @@ def find_image_urls(obj):
 
 
 def upload_to_s3(image_bytes: bytes, key: str, content_type: str = "image/jpeg"):
-    s3.put_object(Bucket=S3_BUCKET, Key=key, Body=image_bytes, ContentType=content_type)
+    s3.put_object(
+        Bucket=S3_BUCKET,
+        Key=key,
+        Body=image_bytes,
+        ContentType=content_type,
+    )
     return key
 
 
@@ -75,23 +79,38 @@ def create_post(title, content, image_path, source_url=None, reddit_id=None):
         headers=headers,
         timeout=30,
     )
-    return resp.json()
+    result = resp.json()
+    print("GraphQL status:", resp.status_code)
+    print("GraphQL 응답:", result)
+    return result
 
 
 def already_exists(reddit_id: str) -> bool:
     query = """
     query ListPosts {
       listPosts(limit: 200) {
-        items { redditId }
+        items {
+          redditId
+        }
       }
     }
     """
-    headers = {"Content-Type": "application/json", "x-api-key": API_KEY}
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": API_KEY,
+    }
     try:
-        resp = requests.post(GRAPHQL_ENDPOINT, json={"query": query}, headers=headers, timeout=20)
-        items = resp.json().get("data", {}).get("listPosts", {}).get("items", [])
+        resp = requests.post(
+            GRAPHQL_ENDPOINT,
+            json={"query": query},
+            headers=headers,
+            timeout=20,
+        )
+        result = resp.json()
+        items = result.get("data", {}).get("listPosts", {}).get("items", []) or []
         return any(item.get("redditId") == reddit_id for item in items)
-    except Exception:
+    except Exception as e:
+        print(f"already_exists 체크 실패: {e}")
         return False
 
 
@@ -107,7 +126,7 @@ def process_subreddit(client: ApifyClient, subreddit: str):
 
     run_input = {
         "startUrls": start_urls,
-        "maxItems": MAX_ITEMS,      # 서브레딧당 최대 100개 검색
+        "maxItems": MAX_ITEMS,
         "endPage": 20,
         "includeComments": False,
         "proxy": {
@@ -186,7 +205,6 @@ def process_subreddit(client: ApifyClient, subreddit: str):
             f"https://www.reddit.com{item.get('permalink')}" if item.get("permalink") else None
         )
 
-        # 서브레딧 이름을 redditId에 포함시켜 중복 방지 강화
         unique_id = f"{subreddit}_{post_id}"
 
         if already_exists(unique_id):
@@ -196,6 +214,7 @@ def process_subreddit(client: ApifyClient, subreddit: str):
         try:
             response = requests.get(valid_image_url, timeout=25)
             if response.status_code != 200:
+                print(f"이미지 다운로드 실패: {response.status_code}")
                 continue
 
             path = urlparse(valid_image_url).path
@@ -207,13 +226,21 @@ def process_subreddit(client: ApifyClient, subreddit: str):
             content_type = response.headers.get("Content-Type", "image/jpeg")
 
             upload_to_s3(response.content, s3_key, content_type)
+            print(f"S3 업로드 완료: {s3_key}")
+
             result = create_post(title, content, s3_key, source_url, unique_id)
 
-            if "errors" not in result:
+            post_id_created = (
+                result.get("data", {})
+                .get("createPost", {})
+                .get("id")
+            )
+
+            if post_id_created:
                 success_count += 1
-                print(f"  [{success_count}] 성공: {title[:50]}")
+                print(f"  [{success_count}] DB 저장 성공: {title[:50]}")
             else:
-                print(f"  GraphQL 에러: {result.get('errors')}")
+                print(f"  DB 저장 실패: {result}")
 
             time.sleep(0.4)
 
@@ -227,6 +254,8 @@ def process_subreddit(client: ApifyClient, subreddit: str):
 def main():
     print(f"대상 서브레딧: {SUBREDDITS}")
     print(f"서브레딧당 검색: {MAX_ITEMS}개 / 업로드: {LIMIT_PER_SUB}개")
+    print(f"S3_BUCKET: {S3_BUCKET}")
+    print(f"GRAPHQL_ENDPOINT: {GRAPHQL_ENDPOINT}")
 
     client = ApifyClient(APIFY_TOKEN)
     total_success = 0
@@ -239,10 +268,9 @@ def main():
             print(f"r/{subreddit} 처리 중 예외 발생: {e}")
             continue
 
-        # 서브레딧 사이 잠시 대기 (예의 + rate limit)
         time.sleep(2)
 
-    print(f"\n===== 전체 완료! 총 {total_success}개 업로드 =====")
+    print(f"\n===== 전체 완료! 총 {total_success}개 DB 저장 성공 =====")
 
 
 if __name__ == "__main__":
