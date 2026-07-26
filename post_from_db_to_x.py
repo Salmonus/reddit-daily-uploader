@@ -2,6 +2,7 @@ import os
 import time
 import tempfile
 import requests
+from urllib.parse import urlparse
 import boto3
 import tweepy
 
@@ -21,10 +22,7 @@ s3 = boto3.client("s3", region_name=AWS_REGION)
 
 
 def gql(query, variables=None):
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": API_KEY,
-    }
+    headers = {"Content-Type": "application/json", "x-api-key": API_KEY}
     resp = requests.post(
         GRAPHQL_ENDPOINT,
         json={"query": query, "variables": variables or {}},
@@ -37,24 +35,25 @@ def gql(query, variables=None):
     return data
 
 
-def list_approved_posts():
-    # 페이지네이션 단순화: 최근 200개 중 approved만
+def list_pending_posts():
     query = """
     query ListPosts {
       listPosts(limit: 200) {
         items {
           id
           title
+          content
           imagePath
           status
           sourceUrl
+          redditId
         }
       }
     }
     """
     result = gql(query)
     items = result.get("data", {}).get("listPosts", {}).get("items", []) or []
-    return [p for p in items if (p.get("status") or "") == "approved" and p.get("imagePath")]
+    return [p for p in items if (p.get("status") or "") == "pending" and p.get("imagePath")]
 
 
 def mark_posted(post_id: str):
@@ -70,7 +69,6 @@ def mark_posted(post_id: str):
 
 
 def download_from_s3(image_path: str) -> str:
-    """S3 객체를 임시 파일로 저장하고 경로 반환"""
     suffix = os.path.splitext(image_path)[1] or ".jpg"
     fd, tmp_path = tempfile.mkstemp(suffix=suffix)
     os.close(fd)
@@ -78,16 +76,23 @@ def download_from_s3(image_path: str) -> str:
     return tmp_path
 
 
-def post_image_to_x(image_path_local: str, title: str = "") -> bool:
-    # v1.1 미디어 업로드 + v2 트윗
+def extract_username_from_url(source_url: str) -> str:
+    """https://x.com/username/status/123 → username"""
+    try:
+        path = urlparse(source_url).path.strip("/")
+        parts = path.split("/")
+        if len(parts) >= 1 and parts[0] not in ("i", "status"):
+            return parts[0]
+    except Exception:
+        pass
+    return "unknown"
+
+
+def post_image_to_x(image_path_local: str, text: str, username: str) -> bool:
     auth = tweepy.OAuth1UserHandler(
-        X_API_KEY,
-        X_API_SECRET,
-        X_ACCESS_TOKEN,
-        X_ACCESS_TOKEN_SECRET,
+        X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET
     )
     api_v1 = tweepy.API(auth)
-
     client = tweepy.Client(
         consumer_key=X_API_KEY,
         consumer_secret=X_API_SECRET,
@@ -98,30 +103,43 @@ def post_image_to_x(image_path_local: str, title: str = "") -> bool:
     media = api_v1.media_upload(filename=image_path_local)
     media_id = media.media_id_string
 
-    # 이미지만 올리기 (빈 텍스트 거절 가능성 있어 공백)
-    client.create_tweet(text=" ", media_ids=[media_id])
+    # 원작자 멘션 추가
+    final_text = (text or "").strip()
+    if username and username != "unknown":
+        mention = f"\n\nvia @{username}"
+        # 280자 제한 고려
+        if len(final_text) + len(mention) > 280:
+            final_text = final_text[: 280 - len(mention) - 3] + "..."
+        final_text += mention
+    else:
+        final_text = final_text or " "
+
+    client.create_tweet(text=final_text[:280], media_ids=[media_id])
     return True
 
 
 def main():
-    print("approved 게시글 조회 중...")
-    posts = list_approved_posts()
+    print("pending 게시글 조회 중...")
+    posts = list_pending_posts()
     print(f"대상 {len(posts)}개")
 
     success = 0
     for post in posts[:MAX_POSTS_PER_RUN]:
         post_id = post["id"]
         image_path = post["imagePath"]
-        title = post.get("title") or ""
+        content = post.get("content") or ""
+        source_url = post.get("sourceUrl") or ""
+        username = extract_username_from_url(source_url)
+
         tmp = None
         try:
-            print(f"처리 중: {post_id} / {title[:40]}")
+            print(f"처리 중: {post_id} / @{username}")
             tmp = download_from_s3(image_path)
-            post_image_to_x(tmp, title)
+            post_image_to_x(tmp, content, username)
             mark_posted(post_id)
             success += 1
-            print(f"  성공 → status=posted")
-            time.sleep(2)
+            print(f"  성공 → status=posted (via @{username})")
+            time.sleep(5)  # rate limit 여유
         except Exception as e:
             print(f"  실패: {e}")
         finally:
