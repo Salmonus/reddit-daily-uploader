@@ -8,8 +8,9 @@ import boto3
 
 # ===== 환경변수 =====
 APIFY_TOKEN = os.environ["APIFY_TOKEN"]
-SEARCH_KEYWORD = os.environ.get("SEARCH_KEYWORD", "AI")
-MAX_ITEMS = int(os.environ.get("MAX_ITEMS", "50"))      # Apify 최소 권장 때문에 여유
+# 콤마로 여러 키워드 지원 (예: femboy,trans,mtf)
+SEARCH_KEYWORDS = [k.strip() for k in os.environ.get("SEARCH_KEYWORD", "AI").split(",") if k.strip()]
+MAX_ITEMS = int(os.environ.get("MAX_ITEMS", "50"))      # Apify에서 가져올 최대 개수
 LIMIT_UPLOAD = int(os.environ.get("LIMIT_UPLOAD", "20")) # 실제로 저장할 개수
 S3_BUCKET = os.environ["S3_BUCKET"]
 AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
@@ -112,12 +113,12 @@ def already_exists(tweet_id: str) -> bool:
 
 def main():
     print(f"===== X 스크래핑 시작 ({datetime.now(timezone.utc)}) =====")
-    print(f"키워드: {SEARCH_KEYWORD} / 저장 목표: {LIMIT_UPLOAD}개")
+    print(f"키워드: {SEARCH_KEYWORDS} / 저장 목표: {LIMIT_UPLOAD}개")
 
     client = ApifyClient(APIFY_TOKEN)
 
     run_input = {
-        "searchTerms": [SEARCH_KEYWORD],
+        "searchTerms": SEARCH_KEYWORDS,   # 여러 키워드 지원
         "sort": "Top",
         "maxItems": MAX_ITEMS,
     }
