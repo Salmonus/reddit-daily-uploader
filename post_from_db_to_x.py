@@ -1,11 +1,9 @@
 import os
 import time
-import tempfile
 import requests
-from urllib.parse import urlparse
+import re
 import boto3
 import tweepy
-import re
 
 GRAPHQL_ENDPOINT = os.environ["GRAPHQL_ENDPOINT"]
 API_KEY = os.environ["API_KEY"]
@@ -69,12 +67,11 @@ def mark_posted(post_id: str):
     return gql(mutation, {"input": {"id": post_id, "status": "posted"}})
 
 
-def has_x_com_link(text: str) -> bool:
-    """본문에 x.com 링크가 있는지 확인"""
+def has_link(text: str) -> bool:
+    """본문에 t.co 또는 x.com / twitter.com 링크가 있는지 확인"""
     if not text:
         return False
-    # x.com 또는 twitter.com 링크가 있는지 체크
-    pattern = r'(https?://)?(www\.)?(x\.com|twitter\.com)/[^\s]+'
+    pattern = r'(https?://)?(www\.)?(t\.co|x\.com|twitter\.com)/[^\s]+'
     return bool(re.search(pattern, text, re.IGNORECASE))
 
 
@@ -105,11 +102,10 @@ def main():
         content = post.get("content") or ""
         title = post.get("title") or ""
 
-        # ===== 핵심 조건: x.com 링크가 있는 경우만 포스팅 =====
-        if not has_x_com_link(content):
+        # ===== t.co / x.com 링크가 있는 경우만 포스팅 =====
+        if not has_link(content):
             skipped_no_link += 1
-            print(f"[스킵] x.com 링크 없음: {post_id}")
-            # 필요하면 여기서 mark_posted 해서 다시 안 나오게 할 수도 있음
+            print(f"[스킵] t.co/x.com 링크 없음: {post_id}")
             continue
 
         # ===== 텍스트 + via 구성 =====
@@ -125,7 +121,6 @@ def main():
                 final_text = f"via @{username}"
             print(f"처리 중: {post_id} / via @{username} (이미지 없이 텍스트만)")
         else:
-            # username이 없는 경우
             final_text = content.strip() or " "
             print(f"처리 중: {post_id} / username 없음 → 텍스트만")
 
@@ -134,12 +129,13 @@ def main():
             post_text_only_to_x(final_text)
             mark_posted(post_id)
             success += 1
-            print(f"  성공 → status=posted (이미지 없음)")
-            time.sleep(8)  # 간격 조금 여유 있게
+            print(f"  성공 → status=posted (이미지 없음) | 예상 비용: $0.20")
+            time.sleep(8)
         except Exception as e:
             print(f"  실패: {e}")
 
-    print(f"\n완료: {success}개 포스팅 / x.com 링크 없어서 스킵: {skipped_no_link}개")
+    print(f"\n완료: {success}개 포스팅 / 링크 없어서 스킵: {skipped_no_link}개")
+    print(f"참고: 링크 포함 게시물 1개당 약 $0.20 크레딧이 차감됩니다.")
 
 
 if __name__ == "__main__":
