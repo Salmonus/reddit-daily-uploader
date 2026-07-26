@@ -26,38 +26,30 @@ def is_image_url(url: str) -> bool:
     url_lower = url.lower()
     if "pbs.twimg.com" not in url_lower and "twimg.com" not in url_lower:
         return False
-    # 비디오 썸네일 제외 (가능하면)
+    # 비디오 썸네일 제외
     if "video_thumb" in url_lower or "amplify_video_thumb" in url_lower:
         return False
-    # 확장자나 name= 파라미터가 있으면 더 확실
     if any(ext in url_lower for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif"]):
         return True
     if "name=" in url_lower or "/media/" in url_lower:
         return True
-    return True  # pbs.twimg.com이면 일단 통과
+    return True
 
 
 def find_image_urls(obj, found=None) -> list[str]:
-    """
-    최대한 강력하게 이미지 URL을 찾는 함수
-    - 재귀적으로 전체 객체를 탐색
-    - 알려진 필드명들을 우선 체크
-    """
+    """최대한 강력하게 이미지 URL을 찾는 함수"""
     if found is None:
         found = []
 
     if isinstance(obj, dict):
-        # 1. 직접적인 이미지 필드들 우선 체크
         for key in [
             "media_url_https", "media_url", "url", "mediaUrl", "image", "photo",
-            "src", "href", "expanded_url", "display_url", "coverImage",
-            "profile_image_url_https", "profile_banner_url"
+            "src", "href", "expanded_url", "display_url", "coverImage"
         ]:
             val = obj.get(key)
             if is_image_url(val):
                 found.append(val)
 
-        # 2. media / photos / images 배열 처리
         for key in ["media", "photos", "images", "extended_entities", "entities"]:
             val = obj.get(key)
             if isinstance(val, list):
@@ -66,9 +58,7 @@ def find_image_urls(obj, found=None) -> list[str]:
             elif isinstance(val, dict):
                 find_image_urls(val, found)
 
-        # 3. 나머지 모든 값 재귀 탐색
         for key, val in obj.items():
-            # 이미 위에서 처리한 키는 스킵
             if key in ["media_url_https", "media_url", "url", "media", "photos", "images"]:
                 continue
             find_image_urls(val, found)
@@ -81,7 +71,6 @@ def find_image_urls(obj, found=None) -> list[str]:
         if is_image_url(obj):
             found.append(obj)
 
-    # 중복 제거 + 고화질 변환 + 정렬 (실제 사진 우선)
     cleaned = []
     seen = set()
     for u in found:
@@ -89,16 +78,37 @@ def find_image_urls(obj, found=None) -> list[str]:
         if not u or u in seen:
             continue
         seen.add(u)
-
-        # 고화질로 변환 시도
         if "name=" not in u and "pbs.twimg.com/media/" in u:
             u = u + ("&name=large" if "?" in u else "?name=large")
-
         cleaned.append(u)
 
-    # video_thumb이 아닌 것을 앞으로
     cleaned.sort(key=lambda x: ("video_thumb" in x.lower(), x))
     return cleaned
+
+
+def is_original_post(item: dict) -> bool:
+    """reply / retweet이면 False, 원본이면 True"""
+    # 여러 가지 필드명 대응
+    if item.get("isReply") or item.get("is_reply") or item.get("inReplyToId") or item.get("in_reply_to_status_id"):
+        return False
+    if item.get("isRetweet") or item.get("is_retweet") or item.get("retweeted") or item.get("retweeted_status"):
+        return False
+    if item.get("isQuote") and item.get("quotedStatus"):  # 인용 트윗도 원본이 아닐 수 있음 (선택)
+        # 인용은 허용하려면 이 부분 주석 처리
+        pass
+    return True
+
+
+def get_like_count(item: dict) -> int:
+    """좋아요 수 추출"""
+    return (
+        item.get("likeCount")
+        or item.get("favorite_count")
+        or item.get("favorites")
+        or item.get("likes")
+        or item.get("favoriteCount")
+        or 0
+    )
 
 
 def upload_to_s3(image_bytes: bytes, key: str, content_type: str = "image/jpeg"):
@@ -162,6 +172,7 @@ def already_exists(tweet_id: str) -> bool:
 def main():
     print(f"===== X 스크래핑 시작 ({datetime.now(timezone.utc)}) =====")
     print(f"키워드: {SEARCH_KEYWORDS} / 저장 목표: {LIMIT_UPLOAD}개")
+    print("필터: 원본 게시물만 + 좋아요 100개 이상")
 
     client = ApifyClient(APIFY_TOKEN)
 
@@ -187,10 +198,13 @@ def main():
     items = list(client.dataset(dataset_id).iterate_items())
     print(f"수집된 포스트: {len(items)}개")
 
-    items.sort(key=lambda x: x.get("likeCount", 0) or 0, reverse=True)
+    # 좋아요 많은 순으로 정렬
+    items.sort(key=lambda x: get_like_count(x), reverse=True)
 
     success_count = 0
     no_image_count = 0
+    skipped_reply_retweet = 0
+    skipped_low_likes = 0
 
     for item in items:
         if success_count >= LIMIT_UPLOAD:
@@ -198,6 +212,19 @@ def main():
 
         tweet_id = str(item.get("id") or item.get("tweetId") or "")
         if not tweet_id:
+            continue
+
+        # ===== 1. 원본 게시물인지 체크 =====
+        if not is_original_post(item):
+            skipped_reply_retweet += 1
+            print(f"[스킵] reply/repost: {tweet_id}")
+            continue
+
+        # ===== 2. 좋아요 100개 이상인지 체크 =====
+        like_count = get_like_count(item)
+        if like_count < 100:
+            skipped_low_likes += 1
+            print(f"[스킵] 좋아요 부족 ({like_count}): {tweet_id}")
             continue
 
         if already_exists(tweet_id):
@@ -247,7 +274,7 @@ def main():
             content_type = response.headers.get("Content-Type", "image/jpeg")
 
             upload_to_s3(response.content, s3_key, content_type)
-            print(f"S3 업로드 완료: {s3_key} (title: {title}) | 이미지 후보 {len(image_urls)}개")
+            print(f"S3 업로드 완료: {s3_key} (title: {title} | likes: {like_count})")
 
             result = create_post(title, text, s3_key, source_url, tweet_id)
 
@@ -263,7 +290,11 @@ def main():
         except Exception as e:
             print(f"  에러 {tweet_id}: {e}")
 
-    print(f"\n===== 스크래핑 완료! 총 {success_count}개 DB 저장 / 이미지 없음 {no_image_count}개 =====")
+    print(f"\n===== 스크래핑 완료! =====")
+    print(f"성공 저장: {success_count}개")
+    print(f"스킵 - reply/repost: {skipped_reply_retweet}개")
+    print(f"스킵 - 좋아요 부족: {skipped_low_likes}개")
+    print(f"스킵 - 이미지 없음: {no_image_count}개")
 
 
 if __name__ == "__main__":
