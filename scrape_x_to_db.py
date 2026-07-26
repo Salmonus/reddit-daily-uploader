@@ -158,22 +158,25 @@ def main():
             print(f"[스킵] 이미지 없음: {tweet_id}")
             continue
 
-        # ===== 원작자 username 추출 (핵심 수정) =====
+        # 원작자 username 추출
         author = item.get("author") or {}
         username = (
             author.get("userName")
             or author.get("username")
             or author.get("screen_name")
             or author.get("screenName")
-            or "unknown"
+            or None
         )
 
         valid_image_url = image_urls[0]
         text = item.get("text") or item.get("full_text") or ""
-        source_url = item.get("url") or item.get("twitterUrl") or f"https://x.com/{username}/status/{tweet_id}"
+        source_url = item.get("url") or item.get("twitterUrl") or f"https://x.com/i/status/{tweet_id}"
 
-        # title에 @username을 저장 (나중에 포스팅할 때 사용)
-        title = f"@{username}"
+        # username이 있으면 @username으로 저장, 없으면 텍스트로 저장
+        if username:
+            title = f"@{username}"
+        else:
+            title = text[:200] if text else f"X post {tweet_id}"
 
         try:
             response = requests.get(valid_image_url, timeout=25)
@@ -190,14 +193,14 @@ def main():
             content_type = response.headers.get("Content-Type", "image/jpeg")
 
             upload_to_s3(response.content, s3_key, content_type)
-            print(f"S3 업로드 완료: {s3_key} (@{username})")
+            print(f"S3 업로드 완료: {s3_key} (title: {title})")
 
             result = create_post(title, text, s3_key, source_url, tweet_id)
 
             post_id_created = result.get("data", {}).get("createPost", {}).get("id")
             if post_id_created:
                 success_count += 1
-                print(f"  [{success_count}] DB 저장 성공: @{username}")
+                print(f"  [{success_count}] DB 저장 성공: {title}")
             else:
                 print(f"  DB 저장 실패: {result}")
 
