@@ -8,10 +8,9 @@ import boto3
 
 # ===== 환경변수 =====
 APIFY_TOKEN = os.environ["APIFY_TOKEN"]
-# 콤마로 여러 키워드 지원 (예: femboy,trans,mtf)
 SEARCH_KEYWORDS = [k.strip() for k in os.environ.get("SEARCH_KEYWORD", "AI").split(",") if k.strip()]
-MAX_ITEMS = int(os.environ.get("MAX_ITEMS", "50"))      # Apify에서 가져올 최대 개수
-LIMIT_UPLOAD = int(os.environ.get("LIMIT_UPLOAD", "20")) # 실제로 저장할 개수
+MAX_ITEMS = int(os.environ.get("MAX_ITEMS", "50"))
+LIMIT_UPLOAD = int(os.environ.get("LIMIT_UPLOAD", "20"))
 S3_BUCKET = os.environ["S3_BUCKET"]
 AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 GRAPHQL_ENDPOINT = os.environ["GRAPHQL_ENDPOINT"]
@@ -77,7 +76,7 @@ def create_post(title, content, image_path, source_url=None, tweet_id=None):
             "content": content or "",
             "imagePath": image_path,
             "sourceUrl": source_url,
-            "redditId": tweet_id,          # tweet_id를 redditId 필드에 재사용
+            "redditId": tweet_id,
             "status": "pending",
             "fetchedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
@@ -118,7 +117,7 @@ def main():
     client = ApifyClient(APIFY_TOKEN)
 
     run_input = {
-        "searchTerms": SEARCH_KEYWORDS,   # 여러 키워드 지원
+        "searchTerms": SEARCH_KEYWORDS,
         "sort": "Top",
         "maxItems": MAX_ITEMS,
     }
@@ -126,7 +125,6 @@ def main():
     print("[Apify] Top 포스트 수집 중...")
     run = client.actor("apidojo/tweet-scraper").call(run_input=run_input)
 
-    # Run 객체에서 dataset_id 안전하게 가져오기 (수정된 부분)
     dataset_id = (
         getattr(run, "default_dataset_id", None)
         or getattr(run, "defaultDatasetId", None)
@@ -140,7 +138,6 @@ def main():
     items = list(client.dataset(dataset_id).iterate_items())
     print(f"수집된 포스트: {len(items)}개")
 
-    # likeCount 기준 재정렬 (안전하게)
     items.sort(key=lambda x: x.get("likeCount", 0) or 0, reverse=True)
 
     success_count = 0
@@ -161,10 +158,22 @@ def main():
             print(f"[스킵] 이미지 없음: {tweet_id}")
             continue
 
+        # ===== 원작자 username 추출 (핵심 수정) =====
+        author = item.get("author") or {}
+        username = (
+            author.get("userName")
+            or author.get("username")
+            or author.get("screen_name")
+            or author.get("screenName")
+            or "unknown"
+        )
+
         valid_image_url = image_urls[0]
         text = item.get("text") or item.get("full_text") or ""
-        source_url = item.get("url") or item.get("twitterUrl") or f"https://x.com/i/status/{tweet_id}"
-        title = text[:100] if text else f"X post {tweet_id}"
+        source_url = item.get("url") or item.get("twitterUrl") or f"https://x.com/{username}/status/{tweet_id}"
+
+        # title에 @username을 저장 (나중에 포스팅할 때 사용)
+        title = f"@{username}"
 
         try:
             response = requests.get(valid_image_url, timeout=25)
@@ -181,14 +190,14 @@ def main():
             content_type = response.headers.get("Content-Type", "image/jpeg")
 
             upload_to_s3(response.content, s3_key, content_type)
-            print(f"S3 업로드 완료: {s3_key}")
+            print(f"S3 업로드 완료: {s3_key} (@{username})")
 
             result = create_post(title, text, s3_key, source_url, tweet_id)
 
             post_id_created = result.get("data", {}).get("createPost", {}).get("id")
             if post_id_created:
                 success_count += 1
-                print(f"  [{success_count}] DB 저장 성공: {title[:50]}")
+                print(f"  [{success_count}] DB 저장 성공: @{username}")
             else:
                 print(f"  DB 저장 실패: {result}")
 
