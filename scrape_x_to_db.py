@@ -19,36 +19,85 @@ API_KEY = os.environ["API_KEY"]
 s3 = boto3.client("s3", region_name=AWS_REGION)
 
 
-def find_image_urls(item: dict) -> list[str]:
-    urls = []
-    media = item.get("media") or []
-    if isinstance(media, list):
-        for m in media:
-            if isinstance(m, str) and "pbs.twimg.com" in m and "video_thumb" not in m:
-                urls.append(m)
-            elif isinstance(m, dict):
-                url = m.get("media_url_https") or m.get("url") or m.get("mediaUrl")
-                if url and "pbs.twimg.com" in url and "video_thumb" not in url:
-                    urls.append(url)
+def is_image_url(url: str) -> bool:
+    """이미지 URL인지 판단"""
+    if not isinstance(url, str):
+        return False
+    url_lower = url.lower()
+    if "pbs.twimg.com" not in url_lower and "twimg.com" not in url_lower:
+        return False
+    # 비디오 썸네일 제외 (가능하면)
+    if "video_thumb" in url_lower or "amplify_video_thumb" in url_lower:
+        return False
+    # 확장자나 name= 파라미터가 있으면 더 확실
+    if any(ext in url_lower for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif"]):
+        return True
+    if "name=" in url_lower or "/media/" in url_lower:
+        return True
+    return True  # pbs.twimg.com이면 일단 통과
 
-    for key in ["entities", "extended_entities"]:
-        for m in (item.get(key) or {}).get("media", []):
-            url = m.get("media_url_https") or m.get("url")
-            if url and "pbs.twimg.com" in url and m.get("type") in (None, "photo", "image"):
-                urls.append(url)
 
-    article = item.get("article") or {}
-    for m in (article.get("contentState") or {}).get("media", []):
-        if isinstance(m, str) and "pbs.twimg.com" in m:
-            urls.append(m)
+def find_image_urls(obj, found=None) -> list[str]:
+    """
+    최대한 강력하게 이미지 URL을 찾는 함수
+    - 재귀적으로 전체 객체를 탐색
+    - 알려진 필드명들을 우선 체크
+    """
+    if found is None:
+        found = []
 
+    if isinstance(obj, dict):
+        # 1. 직접적인 이미지 필드들 우선 체크
+        for key in [
+            "media_url_https", "media_url", "url", "mediaUrl", "image", "photo",
+            "src", "href", "expanded_url", "display_url", "coverImage",
+            "profile_image_url_https", "profile_banner_url"
+        ]:
+            val = obj.get(key)
+            if is_image_url(val):
+                found.append(val)
+
+        # 2. media / photos / images 배열 처리
+        for key in ["media", "photos", "images", "extended_entities", "entities"]:
+            val = obj.get(key)
+            if isinstance(val, list):
+                for item in val:
+                    find_image_urls(item, found)
+            elif isinstance(val, dict):
+                find_image_urls(val, found)
+
+        # 3. 나머지 모든 값 재귀 탐색
+        for key, val in obj.items():
+            # 이미 위에서 처리한 키는 스킵
+            if key in ["media_url_https", "media_url", "url", "media", "photos", "images"]:
+                continue
+            find_image_urls(val, found)
+
+    elif isinstance(obj, list):
+        for item in obj:
+            find_image_urls(item, found)
+
+    elif isinstance(obj, str):
+        if is_image_url(obj):
+            found.append(obj)
+
+    # 중복 제거 + 고화질 변환 + 정렬 (실제 사진 우선)
     cleaned = []
-    for u in urls:
-        u = u.replace("&amp;", "&")
-        if "name=" not in u:
-            u += ("&name=large" if "?" in u else "?name=large")
-        if u not in cleaned:
-            cleaned.append(u)
+    seen = set()
+    for u in found:
+        u = u.replace("&amp;", "&").strip()
+        if not u or u in seen:
+            continue
+        seen.add(u)
+
+        # 고화질로 변환 시도
+        if "name=" not in u and "pbs.twimg.com/media/" in u:
+            u = u + ("&name=large" if "?" in u else "?name=large")
+
+        cleaned.append(u)
+
+    # video_thumb이 아닌 것을 앞으로
+    cleaned.sort(key=lambda x: ("video_thumb" in x.lower(), x))
     return cleaned
 
 
@@ -141,6 +190,8 @@ def main():
     items.sort(key=lambda x: x.get("likeCount", 0) or 0, reverse=True)
 
     success_count = 0
+    no_image_count = 0
+
     for item in items:
         if success_count >= LIMIT_UPLOAD:
             break
@@ -154,7 +205,9 @@ def main():
             continue
 
         image_urls = find_image_urls(item)
+
         if not image_urls:
+            no_image_count += 1
             print(f"[스킵] 이미지 없음: {tweet_id}")
             continue
 
@@ -172,16 +225,17 @@ def main():
         text = item.get("text") or item.get("full_text") or ""
         source_url = item.get("url") or item.get("twitterUrl") or f"https://x.com/i/status/{tweet_id}"
 
-        # username이 있으면 @username으로 저장, 없으면 텍스트로 저장
         if username:
             title = f"@{username}"
         else:
             title = text[:200] if text else f"X post {tweet_id}"
 
         try:
-            response = requests.get(valid_image_url, timeout=25)
+            response = requests.get(valid_image_url, timeout=25, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
             if response.status_code != 200:
-                print(f"이미지 다운로드 실패: {response.status_code}")
+                print(f"이미지 다운로드 실패 ({response.status_code}): {valid_image_url[:80]}")
                 continue
 
             path = urlparse(valid_image_url).path
@@ -193,7 +247,7 @@ def main():
             content_type = response.headers.get("Content-Type", "image/jpeg")
 
             upload_to_s3(response.content, s3_key, content_type)
-            print(f"S3 업로드 완료: {s3_key} (title: {title})")
+            print(f"S3 업로드 완료: {s3_key} (title: {title}) | 이미지 후보 {len(image_urls)}개")
 
             result = create_post(title, text, s3_key, source_url, tweet_id)
 
@@ -204,12 +258,12 @@ def main():
             else:
                 print(f"  DB 저장 실패: {result}")
 
-            time.sleep(0.5)
+            time.sleep(0.4)
 
         except Exception as e:
             print(f"  에러 {tweet_id}: {e}")
 
-    print(f"\n===== 스크래핑 완료! 총 {success_count}개 DB 저장 =====")
+    print(f"\n===== 스크래핑 완료! 총 {success_count}개 DB 저장 / 이미지 없음 {no_image_count}개 =====")
 
 
 if __name__ == "__main__":
