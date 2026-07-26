@@ -76,22 +76,7 @@ def download_from_s3(image_path: str) -> str:
     return tmp_path
 
 
-def extract_username_from_url(source_url: str) -> str:
-    """백업용 URL 파싱"""
-    try:
-        path = urlparse(source_url).path.strip("/")
-        parts = [p for p in path.split("/") if p]
-        # 일반적인 형태: username/status/123456
-        if len(parts) >= 3 and parts[1] == "status":
-            return parts[0]
-        if len(parts) >= 1 and parts[0] not in ("i", "status", "web"):
-            return parts[0]
-    except Exception:
-        pass
-    return "unknown"
-
-
-def post_image_to_x(image_path_local: str, text: str, username: str) -> bool:
+def post_image_to_x(image_path_local: str, final_text: str) -> bool:
     auth = tweepy.OAuth1UserHandler(
         X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET
     )
@@ -106,16 +91,9 @@ def post_image_to_x(image_path_local: str, text: str, username: str) -> bool:
     media = api_v1.media_upload(filename=image_path_local)
     media_id = media.media_id_string
 
-    final_text = (text or "").strip()
-    if username and username != "unknown":
-        mention = f"\n\nvia @{username}"
-        if len(final_text) + len(mention) > 280:
-            final_text = final_text[: 280 - len(mention) - 3] + "..."
-        final_text += mention
-    else:
-        final_text = final_text or " "
-
-    client.create_tweet(text=final_text[:280], media_ids=[media_id])
+    # 빈 텍스트 방지
+    tweet_text = final_text.strip() if final_text.strip() else " "
+    client.create_tweet(text=tweet_text[:280], media_ids=[media_id])
     return True
 
 
@@ -129,23 +107,33 @@ def main():
         post_id = post["id"]
         image_path = post["imagePath"]
         content = post.get("content") or ""
-        source_url = post.get("sourceUrl") or ""
-
-        # ===== 원작자 추출 (title에 저장된 @username 우선 사용) =====
         title = post.get("title") or ""
+
+        # ===== 요청하신 로직 =====
         if title.startswith("@"):
-            username = title[1:]          # @제거
+            # username이 제대로 있는 경우 → 본문 + via
+            username = title[1:].strip()
+            final_text = content.strip()
+            if final_text:
+                mention = f"\n\nvia @{username}"
+                if len(final_text) + len(mention) > 280:
+                    final_text = final_text[: 280 - len(mention) - 3] + "..."
+                final_text += mention
+            else:
+                final_text = f"via @{username}"
+            print(f"처리 중: {post_id} / via @{username} (본문 포함)")
         else:
-            username = extract_username_from_url(source_url)
+            # username이 없는 경우 → 공백만
+            final_text = " "
+            print(f"처리 중: {post_id} / username 없음 → 공백만 포스팅")
 
         tmp = None
         try:
-            print(f"처리 중: {post_id} / @{username}")
             tmp = download_from_s3(image_path)
-            post_image_to_x(tmp, content, username)
+            post_image_to_x(tmp, final_text)
             mark_posted(post_id)
             success += 1
-            print(f"  성공 → status=posted (via @{username})")
+            print(f"  성공 → status=posted")
             time.sleep(5)
         except Exception as e:
             print(f"  실패: {e}")
