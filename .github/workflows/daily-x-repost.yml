@@ -1,0 +1,66 @@
+name: Daily X Top Posts Repost
+
+on:
+  schedule:
+    - cron: '0 1 * * *'   # 매일 UTC 01:00 (한국시간 10:00)
+  workflow_dispatch:      # 수동 실행 가능
+
+permissions:
+  id-token: write         # AWS OIDC 쓸 경우 필요
+  contents: read
+
+jobs:
+  scrape-and-post:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install apify-client boto3 tweepy requests
+
+      # AWS 인증 (Access Key 방식 - 간단)
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'ap-southeast-2' }}
+
+      # 또는 OIDC 방식 추천 (더 안전)
+      # - name: Configure AWS credentials (OIDC)
+      #   uses: aws-actions/configure-aws-credentials@v4
+      #   with:
+      #     role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+      #     aws-region: ap-southeast-2
+
+      - name: Scrape X → S3 + GraphQL
+        env:
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          SEARCH_KEYWORD: ${{ secrets.SEARCH_KEYWORD }}
+          MAX_ITEMS: 50
+          LIMIT_UPLOAD: 20
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          GRAPHQL_ENDPOINT: ${{ secrets.GRAPHQL_ENDPOINT }}
+          API_KEY: ${{ secrets.API_KEY }}
+        run: python scrape_x_to_db.py
+
+      - name: Post pending → X
+        env:
+          GRAPHQL_ENDPOINT: ${{ secrets.GRAPHQL_ENDPOINT }}
+          API_KEY: ${{ secrets.API_KEY }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+          MAX_POSTS_PER_RUN: 10
+        run: python post_from_db_to_x.py
