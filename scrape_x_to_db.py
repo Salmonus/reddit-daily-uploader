@@ -9,7 +9,7 @@ import boto3
 # ===== 환경변수 =====
 APIFY_TOKEN = os.environ["APIFY_TOKEN"]
 SEARCH_KEYWORDS = [k.strip() for k in os.environ.get("SEARCH_KEYWORD", "AI").split(",") if k.strip()]
-MAX_ITEMS = int(os.environ.get("MAX_ITEMS", "50"))
+MAX_ITEMS = int(os.environ.get("MAX_ITEMS", "150"))          # 3배 증가 (기본 150)
 LIMIT_UPLOAD = int(os.environ.get("LIMIT_UPLOAD", "20"))
 S3_BUCKET = os.environ["S3_BUCKET"]
 AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
@@ -26,7 +26,6 @@ def is_image_url(url: str) -> bool:
     url_lower = url.lower()
     if "pbs.twimg.com" not in url_lower and "twimg.com" not in url_lower:
         return False
-    # 비디오 썸네일 제외
     if "video_thumb" in url_lower or "amplify_video_thumb" in url_lower:
         return False
     if any(ext in url_lower for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif"]):
@@ -88,14 +87,10 @@ def find_image_urls(obj, found=None) -> list[str]:
 
 def is_original_post(item: dict) -> bool:
     """reply / retweet이면 False, 원본이면 True"""
-    # 여러 가지 필드명 대응
     if item.get("isReply") or item.get("is_reply") or item.get("inReplyToId") or item.get("in_reply_to_status_id"):
         return False
     if item.get("isRetweet") or item.get("is_retweet") or item.get("retweeted") or item.get("retweeted_status"):
         return False
-    if item.get("isQuote") and item.get("quotedStatus"):  # 인용 트윗도 원본이 아닐 수 있음 (선택)
-        # 인용은 허용하려면 이 부분 주석 처리
-        pass
     return True
 
 
@@ -172,7 +167,7 @@ def already_exists(tweet_id: str) -> bool:
 def main():
     print(f"===== X 스크래핑 시작 ({datetime.now(timezone.utc)}) =====")
     print(f"키워드: {SEARCH_KEYWORDS} / 저장 목표: {LIMIT_UPLOAD}개")
-    print("필터: 원본 게시물만 + 좋아요 100개 이상")
+    print(f"필터: 원본 게시물만 + 좋아요 1000개 이상 | 검색 수: {MAX_ITEMS}")
 
     client = ApifyClient(APIFY_TOKEN)
 
@@ -220,9 +215,9 @@ def main():
             print(f"[스킵] reply/repost: {tweet_id}")
             continue
 
-        # ===== 2. 좋아요 100개 이상인지 체크 =====
+        # ===== 2. 좋아요 1000개 이상인지 체크 =====
         like_count = get_like_count(item)
-        if like_count < 100:
+        if like_count < 1000:
             skipped_low_likes += 1
             print(f"[스킵] 좋아요 부족 ({like_count}): {tweet_id}")
             continue
