@@ -77,11 +77,14 @@ def download_from_s3(image_path: str) -> str:
 
 
 def extract_username_from_url(source_url: str) -> str:
-    """https://x.com/username/status/123 → username"""
+    """백업용 URL 파싱"""
     try:
         path = urlparse(source_url).path.strip("/")
-        parts = path.split("/")
-        if len(parts) >= 1 and parts[0] not in ("i", "status"):
+        parts = [p for p in path.split("/") if p]
+        # 일반적인 형태: username/status/123456
+        if len(parts) >= 3 and parts[1] == "status":
+            return parts[0]
+        if len(parts) >= 1 and parts[0] not in ("i", "status", "web"):
             return parts[0]
     except Exception:
         pass
@@ -103,11 +106,9 @@ def post_image_to_x(image_path_local: str, text: str, username: str) -> bool:
     media = api_v1.media_upload(filename=image_path_local)
     media_id = media.media_id_string
 
-    # 원작자 멘션 추가
     final_text = (text or "").strip()
     if username and username != "unknown":
         mention = f"\n\nvia @{username}"
-        # 280자 제한 고려
         if len(final_text) + len(mention) > 280:
             final_text = final_text[: 280 - len(mention) - 3] + "..."
         final_text += mention
@@ -129,7 +130,13 @@ def main():
         image_path = post["imagePath"]
         content = post.get("content") or ""
         source_url = post.get("sourceUrl") or ""
-        username = extract_username_from_url(source_url)
+
+        # ===== 원작자 추출 (title에 저장된 @username 우선 사용) =====
+        title = post.get("title") or ""
+        if title.startswith("@"):
+            username = title[1:]          # @제거
+        else:
+            username = extract_username_from_url(source_url)
 
         tmp = None
         try:
@@ -139,7 +146,7 @@ def main():
             mark_posted(post_id)
             success += 1
             print(f"  성공 → status=posted (via @{username})")
-            time.sleep(5)  # rate limit 여유
+            time.sleep(5)
         except Exception as e:
             print(f"  실패: {e}")
         finally:
