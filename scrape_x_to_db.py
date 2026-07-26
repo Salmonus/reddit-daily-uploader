@@ -126,9 +126,15 @@ def main():
     print("[Apify] Top 포스트 수집 중...")
     run = client.actor("apidojo/tweet-scraper").call(run_input=run_input)
 
-    dataset_id = run.get("defaultDatasetId") or getattr(run, "default_dataset_id", None)
+    # Run 객체에서 dataset_id 안전하게 가져오기 (수정된 부분)
+    dataset_id = (
+        getattr(run, "default_dataset_id", None)
+        or getattr(run, "defaultDatasetId", None)
+    )
+
     if not dataset_id:
         print("데이터셋 ID 없음")
+        print("run 객체:", run)
         return
 
     items = list(client.dataset(dataset_id).iterate_items())
